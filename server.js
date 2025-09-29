@@ -44,25 +44,40 @@ app.post('/refresh', async (req, res) => {
 
         console.log('Cookie validated for user:', userTest.username);
 
-        // Try refresh methods
+        // Try ACTUAL refresh methods
         let newCookie = null;
         let methodUsed = '';
 
-        // Method 1: Simple refresh via auth endpoint
-        newCookie = await method1SimpleRefresh(oldCookie);
-        if (newCookie) methodUsed = 'Simple Refresh';
-
-        // Method 2: Use the original cookie if refresh fails but cookie is valid
-        if (!newCookie && userTest.valid) {
-            newCookie = oldCookie;
-            methodUsed = 'Original (Valid)';
-            console.log('Using original cookie as it appears valid');
+        // Method 1: ACTUAL Authentication Ticket Refresh
+        newCookie = await method1AuthTicketRefresh(oldCookie);
+        if (newCookie && newCookie !== oldCookie) {
+            methodUsed = 'Auth Ticket Refresh';
+            console.log('Successfully generated NEW cookie via auth ticket');
         }
 
-        if (!newCookie) {
+        // Method 2: Game Join Method (Alternative)
+        if (!newCookie || newCookie === oldCookie) {
+            newCookie = await method2GameJoinRefresh(oldCookie);
+            if (newCookie && newCookie !== oldCookie) {
+                methodUsed = 'Game Join Refresh';
+                console.log('Successfully generated NEW cookie via game join');
+            }
+        }
+
+        // Method 3: Legacy Method
+        if (!newCookie || newCookie === oldCookie) {
+            newCookie = await method3LegacyRefresh(oldCookie);
+            if (newCookie && newCookie !== oldCookie) {
+                methodUsed = 'Legacy Refresh';
+                console.log('Successfully generated NEW cookie via legacy method');
+            }
+        }
+
+        // If all methods failed to generate a NEW cookie
+        if (!newCookie || newCookie === oldCookie) {
             return res.status(400).json({ 
-                error: "Unable to refresh cookie",
-                details: "The cookie is valid but refresh methods are blocked. Your original cookie may still work."
+                error: "Unable to generate new cookie",
+                details: "All refresh methods returned the original cookie. The cookie may already be fresh or refresh is blocked."
             });
         }
 
@@ -76,7 +91,7 @@ app.post('/refresh', async (req, res) => {
             length: newCookie.length,
             username: finalUsername,
             method: methodUsed,
-            message: `Cookie processed successfully using ${methodUsed} method`
+            message: `✅ Successfully generated NEW cookie using ${methodUsed}`
         });
 
     } catch (error) {
@@ -143,34 +158,152 @@ async function testCookieValidity(cookie) {
     }
 }
 
-// METHOD 1: Simple refresh using economy endpoint
-async function method1SimpleRefresh(cookie) {
+// METHOD 1: ACTUAL Authentication Ticket Refresh
+async function method1AuthTicketRefresh(cookie) {
     try {
+        console.log('Attempting Auth Ticket method...');
+        
+        // Step 1: Get CSRF token
         const csrfToken = await getCSRFToken(cookie);
         if (!csrfToken) {
-            console.log('Method 1: Failed to get CSRF token');
+            console.log('Failed to get CSRF token for auth ticket');
             return null;
         }
 
-        const response = await axios.get('https://economy.roblox.com/v1/user/currency', {
-            headers: {
-                'Cookie': `.ROBLOSECURITY=${cookie}`,
-                'X-CSRF-TOKEN': csrfToken,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        // Step 2: Get authentication ticket
+        const authResponse = await axios.post('https://auth.roblox.com/v1/authentication-ticket',
+            {},
+            {
+                headers: {
+                    'Cookie': `.ROBLOSECURITY=${cookie}`,
+                    'X-CSRF-TOKEN': csrfToken,
+                    'Content-Type': 'application/json',
+                    'Origin': 'https://www.roblox.com',
+                    'Referer': 'https://www.roblox.com/',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'RBXAuthenticationNegotiation': '1'
+                },
+                validateStatus: () => true,
+                timeout: 15000
+            }
+        );
+
+        const authTicket = authResponse.headers['rbx-authentication-ticket'];
+        if (!authTicket) {
+            console.log('No auth ticket received');
+            return null;
+        }
+
+        console.log('Got auth ticket, attempting redemption...');
+
+        // Step 3: Redeem auth ticket for NEW cookie
+        const redeemResponse = await axios.post('https://auth.roblox.com/v1/authentication-ticket/redeem',
+            {
+                authenticationTicket: authTicket,
+                // Add additional parameters that might help
+                matchWebsiteVersion: true
             },
-            validateStatus: () => true,
-            timeout: 10000
-        });
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Origin': 'https://www.roblox.com',
+                    'Referer': 'https://www.roblox.com/',
+                    'X-CSRF-TOKEN': csrfToken,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'RBXAuthenticationNegotiation': '1'
+                },
+                validateStatus: () => true,
+                timeout: 15000
+            }
+        );
+
+        console.log('Redeem response status:', redeemResponse.status);
+
+        // Extract NEW cookie from response
+        const newCookie = extractCookieFromResponse(redeemResponse);
+        if (newCookie && newCookie !== cookie) {
+            console.log('Successfully generated NEW cookie via auth ticket');
+            return newCookie;
+        }
+
+        return null;
+
+    } catch (error) {
+        console.log('Auth ticket method error:', error.message);
+        return null;
+    }
+}
+
+// METHOD 2: Game Join Refresh
+async function method2GameJoinRefresh(cookie) {
+    try {
+        console.log('Attempting Game Join method...');
+        
+        const csrfToken = await getCSRFToken(cookie);
+        if (!csrfToken) return null;
+
+        const response = await axios.post('https://gamejoin.roblox.com/v1/join-game-instance',
+            {
+                placeId: 2753915549, // Popular game ID
+                gameId: "test-game-join-session"
+            },
+            {
+                headers: {
+                    'Cookie': `.ROBLOSECURITY=${cookie}`,
+                    'X-CSRF-TOKEN': csrfToken,
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                validateStatus: () => true,
+                timeout: 10000
+            }
+        );
 
         const newCookie = extractCookieFromResponse(response);
-        if (newCookie) {
-            console.log('Method 1: Successfully refreshed cookie');
+        if (newCookie && newCookie !== cookie) {
+            console.log('Successfully generated NEW cookie via game join');
             return newCookie;
         }
 
         return null;
     } catch (error) {
-        console.log('Method 1 error:', error.message);
+        console.log('Game join method error:', error.message);
+        return null;
+    }
+}
+
+// METHOD 3: Legacy Refresh
+async function method3LegacyRefresh(cookie) {
+    try {
+        console.log('Attempting Legacy method...');
+        
+        const csrfToken = await getCSRFToken(cookie);
+        if (!csrfToken) return null;
+
+        // Try to trigger a cookie refresh by accessing a protected endpoint
+        const response = await axios.post('https://auth.roblox.com/v2/login',
+            {},
+            {
+                headers: {
+                    'Cookie': `.ROBLOSECURITY=${cookie}`,
+                    'X-CSRF-TOKEN': csrfToken,
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                validateStatus: () => true,
+                timeout: 10000
+            }
+        );
+
+        const newCookie = extractCookieFromResponse(response);
+        if (newCookie && newCookie !== cookie) {
+            console.log('Successfully generated NEW cookie via legacy method');
+            return newCookie;
+        }
+
+        return null;
+    } catch (error) {
+        console.log('Legacy method error:', error.message);
         return null;
     }
 }
@@ -206,7 +339,7 @@ function extractCookieFromResponse(response) {
             if (header.includes('.ROBLOSECURITY=')) {
                 const match = header.match(/\.ROBLOSECURITY=([^;]+)/);
                 if (match && match[1]) {
-                    console.log('Found new cookie in response');
+                    console.log('Found NEW cookie in response headers');
                     return match[1];
                 }
             }
