@@ -9,11 +9,11 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
-// Serve static files
-app.use(express.static(path.join(__dirname, 'public')));
+// Serve static files from current directory
+app.use(express.static(path.join(__dirname)));
 
-// API endpoint
-app.post('/api/refresh', async (req, res) => {
+// API endpoint - fixed to match frontend
+app.post('/refresh', async (req, res) => {
     try {
         const oldCookie = req.body.cookie;
         
@@ -59,7 +59,7 @@ app.post('/api/refresh', async (req, res) => {
 
 // Serve frontend for all other routes
 app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 async function getCSRFToken(cookie) {
@@ -145,6 +145,14 @@ async function getUsername(cookie) {
     } catch (error) {
         return 'Unknown';
     }
+}
+
+// Start server only if not in Vercel
+if (process.env.VERCEL !== '1') {
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+    });
 }
 
 // Export for Vercel
