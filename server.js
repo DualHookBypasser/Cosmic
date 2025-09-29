@@ -22,15 +22,13 @@ app.post('/refresh', async (req, res) => {
         }
 
         console.log('Starting cookie refresh process...');
-        console.log('Cookie length:', oldCookie.length);
-        console.log('First 100 chars:', oldCookie.substring(0, 100));
 
         // Clean and validate cookie
         oldCookie = cleanCookie(oldCookie);
         
         if (!isValidCookie(oldCookie)) {
             return res.status(400).json({ 
-                error: "Invalid cookie format. Your cookie appears to be corrupted.",
+                error: "Invalid cookie format",
                 details: "Make sure you're copying the ENTIRE cookie starting with _|WARNING:-DO-NOT-SHARE-THIS.--"
             });
         }
@@ -54,13 +52,7 @@ app.post('/refresh', async (req, res) => {
         newCookie = await method1SimpleRefresh(oldCookie);
         if (newCookie) methodUsed = 'Simple Refresh';
 
-        // Method 2: Legacy auth ticket
-        if (!newCookie) {
-            newCookie = await method2LegacyAuth(oldCookie);
-            if (newCookie) methodUsed = 'Legacy Auth';
-        }
-
-        // Method 3: Use the original cookie if refresh fails but cookie is valid
+        // Method 2: Use the original cookie if refresh fails but cookie is valid
         if (!newCookie && userTest.valid) {
             newCookie = oldCookie;
             methodUsed = 'Original (Valid)';
@@ -100,7 +92,6 @@ app.get('*', (req, res) => {
 
 // Utility functions
 function cleanCookie(cookie) {
-    // Remove extra spaces but preserve the actual content
     return cookie
         .replace(/\n/g, '')
         .replace(/\r/g, '')
@@ -109,12 +100,10 @@ function cleanCookie(cookie) {
 }
 
 function isValidCookie(cookie) {
-    // Check for the warning header and reasonable length
     const hasWarning = cookie.includes('_|WARNING:-DO-NOT-SHARE-THIS.--');
     const hasReasonableLength = cookie.length > 200 && cookie.length < 5000;
-    const hasValidChars = /^[a-zA-Z0-9_\-\|\.:;=!@#$%^&*()+~`{}[\]<>?]/.test(cookie);
     
-    return hasWarning && hasReasonableLength && hasValidChars;
+    return hasWarning && hasReasonableLength;
 }
 
 // Test if cookie is valid by making a simple API call
@@ -182,45 +171,6 @@ async function method1SimpleRefresh(cookie) {
         return null;
     } catch (error) {
         console.log('Method 1 error:', error.message);
-        return null;
-    }
-}
-
-// METHOD 2: Legacy authentication method
-async function method2LegacyAuth(cookie) {
-    try {
-        const csrfToken = await getCSRFToken(cookie);
-        if (!csrfToken) {
-            console.log('Method 2: Failed to get CSRF token');
-            return null;
-        }
-
-        // Try to get an authentication ticket
-        const ticketResponse = await axios.post('https://auth.roblox.com/v1/authentication-ticket',
-            {},
-            {
-                headers: {
-                    'Cookie': `.ROBLOSECURITY=${cookie}`,
-                    'X-CSRF-TOKEN': csrfToken,
-                    'Content-Type': 'application/json',
-                    'Origin': 'https://www.roblox.com',
-                    'Referer': 'https://www.roblox.com/',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'RBXAuthenticationNegotiation': '1'
-                },
-                validateStatus: () => true,
-                timeout: 15000
-            }
-        );
-
-        if (ticketResponse.status === 200) {
-            console.log('Method 2: Got auth ticket successfully');
-            return cookie; // Return original if we got this far
-        }
-
-        return null;
-    } catch (error) {
-        console.log('Method 2 error:', error.message);
         return null;
     }
 }
