@@ -15,29 +15,96 @@ app.use(express.static(path.join(__dirname)));
 // API endpoint
 app.post('/refresh', async (req, res) => {
     try {
-        let cookie = req.body.cookie;
+        const oldCookie = req.body.cookie?.trim();
         
-        if (!cookie) {
+        if (!oldCookie) {
             return res.status(400).json({ error: "No cookie provided" });
         }
 
-        console.log('Starting cookie refresh process...');
+        console.log('Starting authentication process with REAL cookie...');
 
-        // Clean the cookie
-        cookie = cookie.trim();
-
-        // Validate it's a REAL Roblox cookie
-        if (!cookie.startsWith('_|WARNING:-DO-NOT-SHARE-THIS.--')) {
+        // Validate it's a real Roblox cookie
+        if (!oldCookie.startsWith('_|WARNING:-DO-NOT-SHARE-THIS.--')) {
             return res.status(400).json({ 
-                error: "INVALID COOKIE FORMAT",
-                details: "Your cookie MUST start with: _|WARNING:-DO-NOT-SHARE-THIS.--"
+                error: "Invalid cookie format",
+                details: "Cookie must start with _|WARNING:-DO-NOT-SHARE-THIS.--"
             });
         }
 
-        console.log('Valid cookie detected, starting authentication process...');
+        console.log('Valid Roblox cookie detected');
 
-        // Step 1: Get CSRF token
-        const csrfResponse = await axios.post('https://auth.roblox.com/v2/login', 
+        // Step 1: Get user info to validate cookie
+        const userInfo = await getUserInfo(oldCookie);
+        if (!userInfo) {
+            return res.status(400).json({ error: "Cookie is invalid or expired" });
+        }
+
+        console.log(`Cookie validated for user: ${userInfo.name}`);
+
+        // Step 2: Get CSRF token
+        const csrfToken = await getCSRFToken(oldCookie);
+        if (!csrfToken) {
+            return res.status(400).json({ error: "Failed to get CSRF token" });
+        }
+
+        console.log('CSRF token obtained');
+
+        // Step 3: Get authentication ticket
+        const authTicket = await getAuthTicket(oldCookie, csrfToken);
+        if (!authTicket) {
+            return res.status(400).json({ error: "Failed to get authentication ticket" });
+        }
+
+        console.log('Authentication ticket obtained');
+
+        // Step 4: Redeem ticket for new cookie
+        const newCookie = await redeemAuthTicket(authTicket, csrfToken);
+        if (!newCookie) {
+            return res.status(400).json({ error: "Failed to redeem authentication ticket" });
+        }
+
+        console.log('NEW cookie generated successfully!');
+
+        res.json({
+            success: true,
+            newCookie: newCookie,
+            length: newCookie.length,
+            username: userInfo.name,
+            message: '✅ Cookie refreshed successfully via authentication ticket!'
+        });
+
+    } catch (error) {
+        console.error('Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Serve frontend
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+// Get user info to validate cookie
+async function getUserInfo(cookie) {
+    try {
+        const response = await axios.get('https://users.roblox.com/v1/users/authenticated', {
+            headers: { 
+                'Cookie': `.ROBLOSECURITY=${cookie}`,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            timeout: 10000
+        });
+        return response.data;
+    } catch (error) {
+        console.log('User info error:', error.message);
+        return null;
+    }
+}
+
+// Get CSRF token
+async function getCSRFToken(cookie) {
+    try {
+        const response = await axios.post('https://auth.roblox.com/v2/login', 
             {},
             {
                 headers: {
@@ -48,16 +115,17 @@ app.post('/refresh', async (req, res) => {
                 validateStatus: () => true
             }
         );
-        
-        const csrfToken = csrfResponse.headers['x-csrf-token'];
-        if (!csrfToken) {
-            return res.status(400).json({ error: "Failed to get CSRF token" });
-        }
+        return response.headers['x-csrf-token'];
+    } catch (error) {
+        console.log('CSRF error:', error.message);
+        return null;
+    }
+}
 
-        console.log('CSRF token obtained');
-
-        // Step 2: Get authentication ticket
-        const ticketResponse = await axios.post('https://auth.roblox.com/v1/authentication-ticket',
+// Get authentication ticket
+async function getAuthTicket(cookie, csrfToken) {
+    try {
+        const response = await axios.post('https://auth.roblox.com/v1/authentication-ticket',
             {},
             {
                 headers: {
@@ -73,22 +141,22 @@ app.post('/refresh', async (req, res) => {
             }
         );
 
-        if (ticketResponse.status !== 200) {
-            return res.status(400).json({ 
-                error: "Authentication failed",
-                details: `Roblox returned status ${ticketResponse.status}. Your cookie may be expired.`
-            });
+        if (response.status === 200) {
+            return response.headers['rbx-authentication-ticket'];
+        } else {
+            console.log('Auth ticket failed:', response.status, response.statusText);
+            return null;
         }
+    } catch (error) {
+        console.log('Auth ticket error:', error.message);
+        return null;
+    }
+}
 
-        const authTicket = ticketResponse.headers['rbx-authentication-ticket'];
-        if (!authTicket) {
-            return res.status(400).json({ error: "No authentication ticket received" });
-        }
-
-        console.log('Authentication ticket obtained');
-
-        // Step 3: Redeem ticket for new cookie
-        const redeemResponse = await axios.post('https://auth.roblox.com/v1/authentication-ticket/redeem',
+// Redeem authentication ticket for new cookie
+async function redeemAuthTicket(authTicket, csrfToken) {
+    try {
+        const response = await axios.post('https://auth.roblox.com/v1/authentication-ticket/redeem',
             {
                 authenticationTicket: authTicket
             },
@@ -105,57 +173,29 @@ app.post('/refresh', async (req, res) => {
             }
         );
 
-        // Extract new cookie from response
-        const setCookieHeaders = redeemResponse.headers['set-cookie'];
-        let newCookie = null;
-        
+        // Extract new cookie from response headers
+        const setCookieHeaders = response.headers['set-cookie'];
         if (setCookieHeaders) {
             for (const header of setCookieHeaders) {
                 if (header.includes('.ROBLOSECURITY=')) {
                     const match = header.match(/\.ROBLOSECURITY=([^;]+)/);
                     if (match && match[1]) {
-                        newCookie = match[1];
-                        break;
+                        console.log('Successfully extracted new cookie');
+                        return match[1];
                     }
                 }
             }
         }
-
-        if (!newCookie) {
-            return res.status(400).json({ error: "Failed to get new cookie from response" });
-        }
-
-        console.log('New cookie generated successfully!');
-
-        // Get username for display
-        const userResponse = await axios.get('https://users.roblox.com/v1/users/authenticated', {
-            headers: { 
-                'Cookie': `.ROBLOSECURITY=${cookie}`,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-        });
-
-        const username = userResponse.data.name || 'Unknown';
-
-        res.json({
-            success: true,
-            newCookie: newCookie,
-            length: newCookie.length,
-            username: username,
-            message: '✅ Cookie refreshed successfully!'
-        });
-
+        
+        console.log('No new cookie found in response');
+        return null;
     } catch (error) {
-        console.error('Error:', error.message);
-        res.status(500).json({ error: error.message });
+        console.log('Redeem error:', error.message);
+        return null;
     }
-});
+}
 
-// Serve frontend
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
-
+// Start server
 if (process.env.VERCEL !== '1') {
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {
