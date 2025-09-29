@@ -23,39 +23,41 @@ app.post('/refresh', async (req, res) => {
 
         console.log('Starting cookie refresh process...');
 
-        // Clean and validate cookie format
+        // Clean the cookie
         oldCookie = cleanCookie(oldCookie);
+        
+        // Validate cookie format
         if (!isValidCookie(oldCookie)) {
-            return res.status(400).json({ error: "Invalid cookie format" });
+            return res.status(400).json({ error: "Invalid cookie format. Make sure it starts with _|WARNING:-DO-NOT-SHARE-THIS.--" });
         }
 
-        // Step 1: Get CSRF token with better error handling
-        const csrfToken = await getCSRFToken(oldCookie);
-        if (!csrfToken) {
-            return res.status(400).json({ error: "Failed to get CSRF token - Cookie may be invalid or expired" });
-        }
-
-        // Step 2: Get authentication ticket with improved headers
-        const authTicket = await getAuthenticationTicket(oldCookie, csrfToken);
-        if (!authTicket) {
-            return res.status(400).json({ error: "Failed to get authentication ticket - Cookie may be invalid or security restrictions are active" });
-        }
-
-        // Step 3: Redeem ticket for new cookie
-        const newCookie = await redeemAuthTicket(authTicket, csrfToken);
+        // Try multiple methods
+        console.log('Trying method 1: Direct refresh...');
+        let newCookie = await method1DirectRefresh(oldCookie);
+        
         if (!newCookie) {
-            return res.status(400).json({ error: "Failed to redeem authentication ticket" });
+            console.log('Method 1 failed, trying method 2: Auth ticket...');
+            newCookie = await method2AuthTicket(oldCookie);
+        }
+        
+        if (!newCookie) {
+            console.log('Method 2 failed, trying method 3: Game join...');
+            newCookie = await method3GameJoin(oldCookie);
+        }
+
+        if (!newCookie) {
+            return res.status(400).json({ error: "All methods failed. The cookie may be invalid, expired, or security restrictions are blocking the refresh." });
         }
 
         // Get username for display
-        const username = await getUsername(oldCookie);
+        const username = await getUsername(newCookie || oldCookie);
 
         res.json({
             success: true,
             newCookie: newCookie,
             length: newCookie.length,
             username: username,
-            message: 'Cookie refreshed successfully using authentication ticket system'
+            message: 'Cookie refreshed successfully!'
         });
 
     } catch (error) {
@@ -64,33 +66,32 @@ app.post('/refresh', async (req, res) => {
     }
 });
 
-// Serve frontend for all other routes
+// Serve frontend
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Clean cookie function
+// Utility functions
 function cleanCookie(cookie) {
-    // Remove any extra spaces, newlines, or invalid characters
-    return cookie
-        .replace(/\s+/g, '')
-        .replace(/\n/g, '')
-        .trim();
+    return cookie.replace(/\s+/g, '').trim();
 }
 
-// Validate cookie format
 function isValidCookie(cookie) {
-    // Check if cookie has the proper format
-    return cookie && cookie.length > 100 && cookie.includes('_|WARNING:-DO-NOT-SHARE-THIS.--');
+    return cookie && cookie.includes('_|WARNING:-DO-NOT-SHARE-THIS.--');
 }
 
-async function getCSRFToken(cookie) {
+// METHOD 1: Direct refresh using settings endpoint
+async function method1DirectRefresh(cookie) {
     try {
-        const response = await axios.post('https://auth.roblox.com/v2/login', 
-            {},
+        const csrfToken = await getCSRFToken(cookie);
+        if (!csrfToken) return null;
+
+        const response = await axios.post('https://accountsettings.roblox.com/v1/email',
+            { email: "test@test.com" }, // Dummy data to trigger refresh
             {
                 headers: {
                     'Cookie': `.ROBLOSECURITY=${cookie}`,
+                    'X-CSRF-TOKEN': csrfToken,
                     'Content-Type': 'application/json',
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
@@ -98,36 +99,22 @@ async function getCSRFToken(cookie) {
                 timeout: 10000
             }
         );
-        
-        if (response.status === 403 && response.headers['x-csrf-token']) {
-            return response.headers['x-csrf-token'];
-        }
-        
-        // Try alternative endpoint if first one fails
-        const altResponse = await axios.post('https://www.roblox.com/favorite/toggle', 
-            {},
-            {
-                headers: {
-                    'Cookie': `.ROBLOSECURITY=${cookie}`,
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                },
-                validateStatus: () => true,
-                timeout: 10000
-            }
-        );
-        
-        return altResponse.headers['x-csrf-token'];
-        
+
+        return extractCookieFromResponse(response);
     } catch (error) {
-        console.error('CSRF token error:', error.message);
+        console.log('Method 1 error:', error.message);
         return null;
     }
 }
 
-async function getAuthenticationTicket(cookie, csrfToken) {
+// METHOD 2: Authentication Ticket (Original method)
+async function method2AuthTicket(cookie) {
     try {
-        const response = await axios.post('https://auth.roblox.com/v1/authentication-ticket',
+        const csrfToken = await getCSRFToken(cookie);
+        if (!csrfToken) return null;
+
+        // Get auth ticket
+        const authResponse = await axios.post('https://auth.roblox.com/v1/authentication-ticket',
             {},
             {
                 headers: {
@@ -139,28 +126,16 @@ async function getAuthenticationTicket(cookie, csrfToken) {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                     'RBXAuthenticationNegotiation': '1'
                 },
-                validateStatus: (status) => status < 500,
+                validateStatus: () => true,
                 timeout: 15000
             }
         );
 
-        if (response.headers['rbx-authentication-ticket']) {
-            return response.headers['rbx-authentication-ticket'];
-        }
+        const authTicket = authResponse.headers['rbx-authentication-ticket'];
+        if (!authTicket) return null;
 
-        console.log('Auth ticket response status:', response.status);
-        console.log('Auth ticket response headers:', response.headers);
-        
-        return null;
-    } catch (error) {
-        console.error('Auth ticket error:', error.response?.data || error.message);
-        return null;
-    }
-}
-
-async function redeemAuthTicket(authTicket, csrfToken) {
-    try {
-        const response = await axios.post('https://auth.roblox.com/v1/authentication-ticket/redeem',
+        // Redeem ticket
+        const redeemResponse = await axios.post('https://auth.roblox.com/v1/authentication-ticket/redeem',
             { authenticationTicket: authTicket },
             {
                 headers: {
@@ -176,30 +151,85 @@ async function redeemAuthTicket(authTicket, csrfToken) {
             }
         );
 
-        console.log('Redeem response status:', response.status);
-        console.log('Redeem response headers:', response.headers);
-
-        const setCookieHeaders = response.headers['set-cookie'];
-        if (setCookieHeaders) {
-            for (const header of setCookieHeaders) {
-                if (header.includes('.ROBLOSECURITY=')) {
-                    const match = header.match(/\.ROBLOSECURITY=([^;]+)/);
-                    if (match && match[1]) {
-                        console.log('Successfully obtained new cookie');
-                        return match[1];
-                    }
-                }
-            }
-        }
-        
-        console.log('No ROBLOSECURITY cookie found in response');
-        return null;
+        return extractCookieFromResponse(redeemResponse);
     } catch (error) {
-        console.error('Redeem error:', error.response?.data || error.message);
+        console.log('Method 2 error:', error.message);
         return null;
     }
 }
 
+// METHOD 3: Game join method
+async function method3GameJoin(cookie) {
+    try {
+        const csrfToken = await getCSRFToken(cookie);
+        if (!csrfToken) return null;
+
+        const response = await axios.post('https://gamejoin.roblox.com/v1/join-game-instance',
+            {
+                placeId: 1818, // Welcome to Roblox place
+                isTeleport: false,
+                gameId: "test-game-id"
+            },
+            {
+                headers: {
+                    'Cookie': `.ROBLOSECURITY=${cookie}`,
+                    'X-CSRF-TOKEN': csrfToken,
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                validateStatus: () => true,
+                timeout: 10000
+            }
+        );
+
+        return extractCookieFromResponse(response);
+    } catch (error) {
+        console.log('Method 3 error:', error.message);
+        return null;
+    }
+}
+
+// Get CSRF token
+async function getCSRFToken(cookie) {
+    try {
+        const response = await axios.post('https://auth.roblox.com/v2/login', 
+            {},
+            {
+                headers: {
+                    'Cookie': `.ROBLOSECURITY=${cookie}`,
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                validateStatus: () => true,
+                timeout: 10000
+            }
+        );
+        
+        return response.headers['x-csrf-token'];
+    } catch (error) {
+        console.log('CSRF token error:', error.message);
+        return null;
+    }
+}
+
+// Extract cookie from response
+function extractCookieFromResponse(response) {
+    const setCookieHeaders = response.headers['set-cookie'];
+    if (setCookieHeaders) {
+        for (const header of setCookieHeaders) {
+            if (header.includes('.ROBLOSECURITY=')) {
+                const match = header.match(/\.ROBLOSECURITY=([^;]+)/);
+                if (match && match[1]) {
+                    console.log('Successfully obtained new cookie');
+                    return match[1];
+                }
+            }
+        }
+    }
+    return null;
+}
+
+// Get username
 async function getUsername(cookie) {
     try {
         const response = await axios.get('https://users.roblox.com/v1/users/authenticated', {
@@ -211,12 +241,11 @@ async function getUsername(cookie) {
         });
         return response.data.name || 'Unknown';
     } catch (error) {
-        console.error('Username fetch error:', error.message);
         return 'Unknown';
     }
 }
 
-// Start server only if not in Vercel
+// Start server
 if (process.env.VERCEL !== '1') {
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {
